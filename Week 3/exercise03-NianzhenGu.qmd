@@ -1,0 +1,231 @@
+---
+title: "Exercise 03"
+author: "Nianzhen Gu (NianzhenGu)"
+date: "08 10 2023"
+format:
+  html:
+    self-contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Exploratory Data Analysis
+
+Do an exploratory data analysis of a matrix of expression values. The data consists of expression values for samples that were treated with DMSO and TSA. The samples were measured using three technologies: bulk, IFC96, IFC800. See the two RDS files `counts.RDS` and `phenodata.RDS`.
+
+The experiment has two experimental factors "Treatment" and "Technology". Treatment has two levels, Technology has three levels. Samples that have the same combination of Treatment & Technology are replicates.
+
+## Data Import
+
+```{r }
+x = readRDS("counts.RDS")
+anno = readRDS("phenodata.RDS")
+head(anno)
+
+```
+
+## Compute and visualize basic statistics on the experimental design
+
+How many replicates are there for each combination of factor levels? How many genes have an expression value above 0 in each sample? Are there systematic differences between the samples in the different conditions (treatment & technology). Visualize the following statistics per sample:
+
+How many replicates are there for each combination of factor levels?
+```{r}
+comb_max <- matrix(0, nrow = 3, ncol = 2)
+rownames(comb_max) <- c("bulk","IFC96","IFC800")
+colnames(comb_max) <- c("DMSO","TSA")
+
+for (i in 1:nrow(anno)) {
+  treatment <- anno[i,1]
+  technology <- anno[i,2]
+  
+  comb_max[technology, treatment] <- comb_max[technology, treatment]+1
+}
+
+print(comb_max)
+```
+
+How many genes have an expression value above 0 in each sample?
+```{r}
+sample_name <- colnames(x)
+num_genes_above_zero <- apply(x > 0, 2, sum)
+cat("Number of genes with expression values above 0 in each sample:\n")
+for (i in seq_along(num_genes_above_zero)) {
+  cat(sample_name[i], ":", num_genes_above_zero[i], "\n")
+}
+```
+
+
+Are there systematic differences between the samples in the different conditions (treatment & technology)？
+
+From the above values, we can see that there are differences between the samples in the different conditions in terms of gene expression values. 
+
+number of detected genes (Color the samples by the experimental condition.)
+```{r}
+library(ggplot2)
+
+sample_condition_table <- data.frame(Sample_Names = sample_name,
+                      Number_of_Genes = 0,
+                      Sum_of_Reads = 0) # create a dataframe to store the number of zeros in each sample
+
+for (sample in sample_name) {
+  category <- paste(anno[sample, "Treatment"],
+                    anno[sample, "Technology"],
+                    sep = "&")
+  count_zero <- sum(x[, sample] == 0) # count 0 in each sample
+  num_genes <- nrow(x) - count_zero # genes number, for later use
+  sum_reads <- sum(x[, sample]) # sum of reads, for later use
+  
+  sample_condition_table[sample_condition_table$Sample_Names==sample, "Number_of_Genes"] <- num_genes
+  sample_condition_table[sample_condition_table$Sample_Names==sample, "Sum_of_Reads"] <- sum_reads
+  sample_condition_table[sample_condition_table$Sample_Names==sample, "Category"] <- category
+}
+
+head(sample_condition_table)
+
+ggplot(sample_condition_table, aes(x = Sample_Names, y = Number_of_Genes, fill = Category)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Number of detected genes", x = "Sample", y = "Number of genes") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=4))
+
+```
+
+total sum of counts per sample (serves as a proxy for the number of sequenced reads per sample) (Color the samples by the experimental condition.)
+```{r}
+ggplot(sample_condition_table, aes(x = Sample_Names, y = Sum_of_Reads, fill = Category)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Total sum of counts per sample", x = "Sample", y = "Total sum of counts") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=4))
+
+```
+
+
+## Normalize the data
+
+Scale the columns so that the total sum of all columns are identical
+
+```{r}
+# install.packages("BiocManager")
+# library(BiocManager)
+# BiocManager::install("preprocessCore")
+
+library(preprocessCore)
+normalized_data <- normalize.quantiles(x, keep.names = TRUE)
+```
+
+## Transform the data to log-scale
+
+Use the function `log1p` to transform the data to log-scale
+
+```{r}
+# Apply log1p transformation to each element
+log_scaled_data <- log1p(normalized_data)
+
+```
+
+## Visualize the distribution of the expression values
+
+Use violin plots and boxplots to visualize the distribution of the expression values. 
+Aggregate the replicates in the same experimental group into one average sample, and plot the averaged sample. Color by experimental factors.
+
+```{r}
+categories <- unique(sample_condition_table$Category)
+gene_names <- rownames(x)
+
+# Filter the table based on the specified categories
+filtered_data <- sample_condition_table[sample_condition_table$Category %in% categories, ]
+
+# Get the names for each category
+result <- split(filtered_data$Sample_Names, filtered_data$Category)
+
+
+average_matrix <- matrix(0, nrow = length(gene_names), ncol = length(categories), dimnames = list(gene_names, categories))
+
+
+for (category in categories) {
+  sum <- rowSums(log_scaled_data[, result[[category]]])
+  average_matrix[, category] <- sum / length(result[[category]])
+}
+
+head(average_matrix)
+
+# Load the required packages
+library(ggplot2)
+library(tidyr)
+library(patchwork)
+
+average_df <- as.data.frame(average_matrix)
+average_df_long <- gather(average_df, key = "category", value = "value")
+
+# Create a violin plot
+violin_plot <- ggplot(average_df_long, aes(x = category, y = value)) +
+  geom_violin(fill = "skyblue", color = "black") + 
+  labs(title = "Violin Plot") +
+  theme_minimal()
+
+# Create a box plot
+box_plot <- ggplot(average_df_long, aes(x = category, y = value)) +
+  geom_boxplot(fill = "skyblue", color = "black") +
+  labs(title = "Box Plot") +
+  theme_minimal()
+
+violin_plot
+
+box_plot
+
+```
+
+## Most variable genes
+
+Identify the 500 most variable genes (with largest variance across samples) and continue working with those
+```{r}
+variance <- apply(log_scaled_data, 1, var)
+sorted_variances <- sort(variance, decreasing = TRUE)
+top500 <- sorted_variances[1:500]
+print(names(top500))
+```
+
+## Sample correlations
+
+Compute and visualize the sample-to-sample correlations
+
+```{r}
+average_df2 <- as.data.frame(average_df[names(top500), ])
+correlations <- cor(average_df2, method = "pearson")
+
+# Visualization
+library(reshape2)
+correlation_plot <- ggplot(data = melt(correlations),
+             aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient(low = "lightblue", high = "tomato") +
+  labs(title = "Sample-to-sample correlations",
+       x = "Sample",
+       y = "Sample",
+       fill = "Correlation Value") +
+  theme(axis.text.x = element_text(angle = 300))
+correlation_plot
+```
+
+## Clustering
+
+Compute and visualize a hierarchical clustering of the samples, use the method `hclust`
+```{r}
+clustering <- hclust(dist(t(average_df2)))
+plot(clustering, main = "Hierarchical clustering",
+     xlab = "Samples", ylab = "Distance",
+     labels = colnames(average_df2),
+     hang = -1, col = "steelblue", cex = 0.8)
+```
+
+## Heatmap
+
+Use the package `pheatmap` to generate a heatmap of the expression data.
+
+```{r}
+library(pheatmap)
+pheatmap(average_df2, main = "Heatmap of the expression data", show_rownames = FALSE)
+
+```
+
